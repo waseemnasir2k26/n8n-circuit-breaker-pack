@@ -1,0 +1,405 @@
+{
+  "name": "Example Protected Agent",
+  "nodes": [
+    {
+      "id": "30c035ec-79ce-5a68-999c-4c129608d7f5",
+      "name": "Start Protected Agent",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -540,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "4a1a6725-26e4-5439-81df-c39a9baee8a6",
+      "name": "Run Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function envStr(name, fallback) {\n  try {\n    var v = $env[name];\n    if (v === undefined || v === null || v === '') { return fallback; }\n    return String(v);\n  } catch (e) {\n    return fallback;\n  }\n}\nfunction pick(v, envName, fallback) {\n  if (v !== undefined && v !== null && v !== '') { return v; }\n  return envStr(envName, fallback);\n}\n\nreturn [{ json: {\n  workflow_key: envStr('N8N_CB_WORKFLOW_KEY', 'example-protected-agent'),\n  run_key: String($execution.id)\n} }];\n"
+      }
+    },
+    {
+      "id": "789cff3a-879d-581d-8fba-3d6603b96de7",
+      "name": "Check Kill Switch",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -100,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_KILL_SWITCH_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "workflow_key": "={{ $json.workflow_key }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "8077ae0a-1dfb-5cc1-b8a2-c6f900373aba",
+      "name": "Check Error Breaker",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ERROR_RATE_BREAKER_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mode": "check",
+            "workflow_key": "={{ $('Run Config').first().json.workflow_key }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "a75dfbd6-c49a-52fe-8a5b-e939d684df63",
+      "name": "Prepare Agent Turn",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        340,
+        0
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2d71fd40-4765-5cf0-b19b-0e49f752a860",
+              "name": "workflow_key",
+              "value": "={{ $('Run Config').first().json.workflow_key }}",
+              "type": "string"
+            },
+            {
+              "id": "a89ccc54-554e-5502-b603-a3949598b4ba",
+              "name": "run_key",
+              "value": "={{ $('Run Config').first().json.run_key }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "4b54413c-509c-5b03-a734-8249d3fc01e5",
+      "name": "Charge Iteration Budget",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ITERATION_BUDGET_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "workflow_key": "={{ $json.workflow_key }}",
+            "run_key": "={{ $json.run_key }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "811ad8e4-6f6d-50a3-a644-5b3eafb29701",
+      "name": "Agent Step (replace with your LLM node)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Replace this node with your real LLM / AI Agent node.\n// It must emit: model, input_tokens, output_tokens, done.\n// Real LLM nodes return token usage on the response - map that here, do not guess.\nvar cfg = $('Run Config').first().json;\nvar step = Number($('Charge Iteration Budget').first().json.iterations || 1);\nvar done = step >= 3;\nreturn [{ json: {\n  workflow_key: cfg.workflow_key,\n  run_key: cfg.run_key,\n  step: step,\n  model: 'gpt-4o-mini',\n  input_tokens: 1200,\n  output_tokens: 300,\n  done: done,\n  answer: done ? 'agent finished' : 'agent needs another turn'\n} }];\n"
+      }
+    },
+    {
+      "id": "74ffebc4-29cd-5393-84cf-29f8606ef647",
+      "name": "Charge Spend Cap",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPEND_CAP_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "workflow_key": "={{ $json.workflow_key }}",
+            "model": "={{ $json.model }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "7dcf2f59-94d1-5dfd-a0f2-4807467ba5dd",
+      "name": "Agent Finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1220,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c37658a8-5b12-5ad2-a5a9-90e26dfdff18",
+              "leftValue": "={{ $('Agent Step (replace with your LLM node)').first().json.done }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d49510ca-19c2-53a5-a8ca-4b0fa6f02635",
+      "name": "Record Success",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        -140
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ERROR_RATE_BREAKER_WORKFLOW_ID",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mode": "record",
+            "status": "success",
+            "workflow_key": "={{ $('Run Config').first().json.workflow_key }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "7c069129-947a-54b1-bcca-bf1a6b9d3edd",
+      "name": "Agent Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        -140
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Start Protected Agent": {
+      "main": [
+        [
+          {
+            "node": "Run Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Config": {
+      "main": [
+        [
+          {
+            "node": "Check Kill Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Kill Switch": {
+      "main": [
+        [
+          {
+            "node": "Check Error Breaker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Error Breaker": {
+      "main": [
+        [
+          {
+            "node": "Prepare Agent Turn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Agent Turn": {
+      "main": [
+        [
+          {
+            "node": "Charge Iteration Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Charge Iteration Budget": {
+      "main": [
+        [
+          {
+            "node": "Agent Step (replace with your LLM node)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Step (replace with your LLM node)": {
+      "main": [
+        [
+          {
+            "node": "Charge Spend Cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Charge Spend Cap": {
+      "main": [
+        [
+          {
+            "node": "Agent Finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Finished?": {
+      "main": [
+        [
+          {
+            "node": "Record Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Agent Turn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Success": {
+      "main": [
+        [
+          {
+            "node": "Agent Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

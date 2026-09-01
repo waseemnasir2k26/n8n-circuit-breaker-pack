@@ -1,0 +1,67 @@
+# n8n-circuit-breaker-pack -- example caps configuration
+#
+# This file is documentation of intent, not a runtime dependency. n8n does not
+# read YAML on its own. Every value below maps to an environment variable the
+# modules read (or a field you can pass in the sub-workflow call), so you can:
+#
+#   1. keep this file in your infra repo as the reviewable source of truth,
+#   2. render it into your n8n container env (docker-compose, .env, k8s configmap),
+#   3. or paste per-call overrides into the Execute Workflow node.
+#
+# Order of precedence inside every module:
+#   value passed in the sub-workflow call  >  environment variable  >  built-in default
+#
+# Why not put the cap in the agent's prompt: a prompt-based limit is a
+# suggestion the model can ignore, misread, or lose in a long context. A
+# config-based limit is arithmetic on a row in a database that the model
+# cannot reach. Only one of those two survives a jailbreak or a loop.
+
+# Identifies the protected workflow across all four modules and all tables.
+# Use one key per protected workflow. Do not reuse a key across workflows or
+# their counters merge.
+workflow_key: my-agent            # env: N8N_CB_WORKFLOW_KEY
+
+spend_cap:
+  # Hard ceiling in USD for the current window. Reaching it (>=) halts.
+  cap_usd: 5.00                   # env: N8N_CB_SPEND_CAP_USD
+  # date_trunc unit for the counter window: hour | day | week | month
+  window: day                     # env: N8N_CB_SPEND_WINDOW
+  # Cost table, USD per 1,000,000 tokens. The values shipped in the Code node
+  # are defaults you must verify against your provider's current price list.
+  # To override at runtime, pass a `cost_table` object in the sub-workflow call
+  # with the same shape:
+  cost_table:
+    gpt-4o:        { input: 2.5,  output: 10.0 }
+    gpt-4o-mini:   { input: 0.15, output: 0.6 }
+    claude-haiku:  { input: 0.8,  output: 4.0 }
+    claude-sonnet: { input: 3.0,  output: 15.0 }
+    claude-opus:   { input: 15.0, output: 75.0 }
+    # Used when the model name matches nothing above. Keep it pessimistic:
+    # an unknown model should cost more than you expect, not less.
+    default:       { input: 5.0,  output: 15.0 }
+
+iteration_budget:
+  # Max loop turns per run_key. Exceeding it (>) halts.
+  max_iterations: 25              # env: N8N_CB_MAX_ITERATIONS
+  # Max wall-clock milliseconds from the first charged iteration of a run.
+  max_runtime_ms: 300000          # env: N8N_CB_MAX_RUNTIME_MS
+
+error_rate_breaker:
+  # How many of the most recent runs form the rolling window.
+  window_size: 20                 # env: N8N_CB_ERROR_WINDOW
+  # Do not trip before this many runs exist in the window. Prevents a single
+  # early failure from reading as a 100% error rate.
+  min_samples: 20                 # env: N8N_CB_ERROR_MIN_SAMPLES
+  # Trip when error_rate > threshold. 0.5 = more than half the window failed.
+  error_rate_threshold: 0.5       # env: N8N_CB_ERROR_RATE_THRESHOLD
+  # Reset is manual, on purpose. There is no auto half-open setting here.
+
+kill_switch:
+  # scope 'global' stops every protected workflow. A scope equal to a
+  # workflow_key stops only that one. Both are read on every entry.
+  # There is no config value: the state lives in the kill_switch table and is
+  # flipped by SQL or by POST to the toggle webhook.
+  webhook_path: circuit-breaker/kill-switch
+  # The toggle webhook ships with header auth enabled. Create the credential in
+  # n8n and keep the header value out of this file.
+  auth: header                    # credential name: e.g. "Kill Switch Header Auth"

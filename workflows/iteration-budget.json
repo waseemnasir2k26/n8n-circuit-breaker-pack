@@ -1,0 +1,296 @@
+{
+  "name": "Circuit Breaker - Iteration Budget",
+  "nodes": [
+    {
+      "id": "068a5283-8e7d-5ea1-8a69-1a1a81325203",
+      "name": "When Called By Protected Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -320,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "a6f5762e-a5df-568e-a8df-ed837dea04e3",
+      "name": "Normalize Budget Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function envStr(name, fallback) {\n  try {\n    var v = $env[name];\n    if (v === undefined || v === null || v === '') { return fallback; }\n    return String(v);\n  } catch (e) {\n    return fallback;\n  }\n}\nfunction pick(v, envName, fallback) {\n  if (v !== undefined && v !== null && v !== '') { return v; }\n  return envStr(envName, fallback);\n}\n\nvar out = [];\nvar items = $input.all();\nfor (var i = 0; i < items.length; i++) {\n  var j = items[i].json || {};\n  var runKey = j.run_key;\n  if (runKey === undefined || runKey === null || runKey === '') { runKey = $execution.id; }\n  out.push({ json: {\n    workflow_key: String(pick(j.workflow_key, 'N8N_CB_WORKFLOW_KEY', 'default')),\n    run_key: String(runKey),\n    max_iterations: Number(pick(j.max_iterations, 'N8N_CB_MAX_ITERATIONS', '25')),\n    max_runtime_ms: Number(pick(j.max_runtime_ms, 'N8N_CB_MAX_RUNTIME_MS', '300000'))\n  } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "8f15df58-4fd1-58fb-86a1-1f3999ded52f",
+      "name": "Increment Iteration Counter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        120,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO iteration_counter (workflow_key, run_key, iterations)\nVALUES ($1, $2, 1)\nON CONFLICT (workflow_key, run_key) DO UPDATE\n  SET iterations = iteration_counter.iterations + 1,\n      updated_at = now()\nRETURNING iterations, started_at,\n  (extract(epoch from (now() - started_at)) * 1000)::bigint AS elapsed_ms;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}, {{ $json.run_key }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "765daf64-3f84-549d-ba07-cc41f678db56",
+      "name": "Evaluate Iteration Budget",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "var cfg = $('Normalize Budget Input').first().json;\nvar row = $input.first().json || {};\nvar iterations = Number(row.iterations || 0);\nvar elapsed = Number(row.elapsed_ms || 0);\nvar overIter = iterations > Number(cfg.max_iterations);\nvar overTime = elapsed > Number(cfg.max_runtime_ms);\nvar reasons = [];\nif (overIter) { reasons.push('iteration budget exceeded: ' + iterations + ' of ' + cfg.max_iterations); }\nif (overTime) { reasons.push('wall-clock budget exceeded: ' + elapsed + ' ms of ' + cfg.max_runtime_ms + ' ms'); }\nreturn [{ json: {\n  workflow_key: cfg.workflow_key,\n  run_key: cfg.run_key,\n  iterations: iterations,\n  max_iterations: Number(cfg.max_iterations),\n  elapsed_ms: elapsed,\n  max_runtime_ms: Number(cfg.max_runtime_ms),\n  iterations_remaining: Number(cfg.max_iterations) - iterations,\n  over_budget: overIter || overTime,\n  reason: reasons.length > 0 ? reasons.join('; ') : 'within iteration and time budget'\n} }];\n"
+      }
+    },
+    {
+      "id": "11d271c6-77f4-53c2-93af-c2aeb63f88bd",
+      "name": "Over Iteration Budget?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c84d04fe-b96b-5f9b-a2be-95cff24f3323",
+              "leftValue": "={{ $json.over_budget }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "3c649f25-9f32-5ba3-b5c6-bc148a349fd3",
+      "name": "Trip Breaker (Iterations)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        780,
+        -140
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO breaker_state (workflow_key, state, reason, tripped_at, tripped_by)\nVALUES ($1, 'open', $2, now(), $3)\nON CONFLICT (workflow_key) DO UPDATE\n  SET state = 'open', reason = EXCLUDED.reason, tripped_at = now(),\n      tripped_by = EXCLUDED.tripped_by, reset_at = NULL, updated_at = now()\nRETURNING workflow_key, state, reason, tripped_at;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}, {{ $json.reason }}, iteration-budget"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "33b7ec13-e83c-542d-b3cf-4b98498905df",
+      "name": "Build Iteration Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        -140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build one alert payload. Wire the NEXT node to Slack / email / PagerDuty.\nvar j = $input.first().json || {};\nreturn [{ json: {\n  alert: true,\n  severity: 'critical',\n  module: 'iteration-budget',\n  workflow_key: j.workflow_key || 'unknown',\n  reason: j.reason || 'limit exceeded',\n  detail: j,\n  execution_id: $execution.id,\n  fired_at: new Date().toISOString()\n} }];\n"
+      }
+    },
+    {
+      "id": "b847b1ad-870d-5a21-b130-d243369f607f",
+      "name": "Iteration Alert Sink (wire Slack or email here)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        -140
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "5dee1e18-fc17-5acb-9257-cb137aa63107",
+      "name": "Halt On Iteration Budget",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        -140
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=CIRCUIT BREAKER: {{ $('Evaluate Iteration Budget').first().json.reason }}"
+      }
+    },
+    {
+      "id": "3a963dc1-7934-5def-8c4c-f6f15cdd0af5",
+      "name": "Iteration Allowed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        780,
+        140
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f2fef727-7910-5a60-ab61-b64e2408b7c2",
+              "name": "allowed",
+              "value": "={{ true }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called By Protected Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Budget Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Budget Input": {
+      "main": [
+        [
+          {
+            "node": "Increment Iteration Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Iteration Counter": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Iteration Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Iteration Budget": {
+      "main": [
+        [
+          {
+            "node": "Over Iteration Budget?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Over Iteration Budget?": {
+      "main": [
+        [
+          {
+            "node": "Trip Breaker (Iterations)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Iteration Allowed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trip Breaker (Iterations)": {
+      "main": [
+        [
+          {
+            "node": "Build Iteration Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Iteration Alert": {
+      "main": [
+        [
+          {
+            "node": "Iteration Alert Sink (wire Slack or email here)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Iteration Alert Sink (wire Slack or email here)": {
+      "main": [
+        [
+          {
+            "node": "Halt On Iteration Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

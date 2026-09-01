@@ -1,0 +1,318 @@
+{
+  "name": "Circuit Breaker - Kill Switch",
+  "nodes": [
+    {
+      "id": "068a5283-8e7d-5ea1-8a69-1a1a81325203",
+      "name": "When Called By Protected Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -540,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "c2a30ccd-de49-58ce-94cf-7a8cd2e7c72c",
+      "name": "Normalize Kill Switch Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function envStr(name, fallback) {\n  try {\n    var v = $env[name];\n    if (v === undefined || v === null || v === '') { return fallback; }\n    return String(v);\n  } catch (e) {\n    return fallback;\n  }\n}\nfunction pick(v, envName, fallback) {\n  if (v !== undefined && v !== null && v !== '') { return v; }\n  return envStr(envName, fallback);\n}\n\nvar out = [];\nvar items = $input.all();\nfor (var i = 0; i < items.length; i++) {\n  var j = items[i].json || {};\n  out.push({ json: {\n    workflow_key: String(pick(j.workflow_key, 'N8N_CB_WORKFLOW_KEY', 'default'))\n  } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "598a42f6-81d6-5d04-8657-99f08049bad7",
+      "name": "Read Kill Switch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -100,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT scope, engaged, reason, engaged_at\nFROM kill_switch\nWHERE scope = 'global' OR scope = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "10a95dea-8215-5274-a613-0b0261d9fbc5",
+      "name": "Evaluate Kill Switch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "var cfg = $('Normalize Kill Switch Input').first().json;\nvar rows = $input.all();\nvar engagedScopes = [];\nvar reason = null;\nfor (var i = 0; i < rows.length; i++) {\n  var r = rows[i].json || {};\n  if (r.engaged === true || r.engaged === 't' || r.engaged === 'true') {\n    engagedScopes.push(String(r.scope));\n    if (reason === null) { reason = r.reason || null; }\n  }\n}\nvar engaged = engagedScopes.length > 0;\nreturn [{ json: {\n  workflow_key: cfg.workflow_key,\n  kill_switch_engaged: engaged,\n  engaged_scopes: engagedScopes,\n  reason: engaged\n    ? ('kill switch engaged for scope(s) ' + engagedScopes.join(', ') + ': ' + (reason || 'no reason recorded'))\n    : 'kill switch clear'\n} }];\n"
+      }
+    },
+    {
+      "id": "d5bd73d1-223a-5bc8-b76b-f7ba85e5db23",
+      "name": "Kill Switch Engaged?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        340,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bf30b9be-ca5d-5da3-9001-c6b93127fe37",
+              "leftValue": "={{ $json.kill_switch_engaged }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c8e7ba93-6bbc-5573-87a8-54c5a9f4d940",
+      "name": "Halt On Kill Switch",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        560,
+        -100
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=KILL SWITCH: {{ $('Evaluate Kill Switch').first().json.reason }}"
+      }
+    },
+    {
+      "id": "93be3b81-73ea-5329-a12c-bb9b41e3b754",
+      "name": "Kill Switch Clear",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        100
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "73aec8a7-5f12-599d-b4ad-68764eacb8c6",
+              "name": "allowed",
+              "value": "={{ true }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "7074fa74-6d88-568e-83a1-a5c4d489631c",
+      "name": "Kill Switch Toggle Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "circuit-breaker/kill-switch",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "webhookId": "2fab09d1-2839-5b6d-92a2-2ad25fef3a62"
+    },
+    {
+      "id": "b58a651e-f503-57d2-8618-b1b6397259ad",
+      "name": "Parse Toggle Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// POST body: { \"scope\": \"global\", \"engaged\": true, \"reason\": \"why\", \"by\": \"who\" }\n// Put header auth on this webhook. Anyone who can POST here can stop your estate.\nvar j = $input.first().json || {};\nvar body = j.body || {};\nvar scope = body.scope;\nif (scope === undefined || scope === null || scope === '') { scope = 'global'; }\nvar engaged = body.engaged;\nif (typeof engaged === 'string') { engaged = engaged.toLowerCase() === 'true'; }\nif (typeof engaged !== 'boolean') { throw new Error('body.engaged must be a boolean'); }\nreturn [{ json: {\n  scope: String(scope),\n  engaged: engaged,\n  reason: (body.reason === undefined || body.reason === null) ? null : String(body.reason).slice(0, 2000),\n  engaged_by: (body.by === undefined || body.by === null) ? 'webhook' : String(body.by)\n} }];\n"
+      }
+    },
+    {
+      "id": "f49afc37-4ad8-5c0e-bc71-3dc2d5786314",
+      "name": "Write Kill Switch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -100,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO kill_switch (scope, engaged, reason, engaged_at, engaged_by)\nVALUES ($1, $2, $3, CASE WHEN $2 THEN now() ELSE NULL END, $4)\nON CONFLICT (scope) DO UPDATE\n  SET engaged = EXCLUDED.engaged, reason = EXCLUDED.reason,\n      engaged_at = EXCLUDED.engaged_at, engaged_by = EXCLUDED.engaged_by,\n      updated_at = now()\nRETURNING scope, engaged, reason, engaged_at;",
+        "options": {
+          "queryReplacement": "={{ $json.scope }}, {{ $json.engaged }}, {{ $json.reason }}, {{ $json.engaged_by }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "dc2d075b-c6fb-58ec-b257-aa7209d68d39",
+      "name": "Respond With Switch State",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        120,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called By Protected Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Kill Switch Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Kill Switch Input": {
+      "main": [
+        [
+          {
+            "node": "Read Kill Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Kill Switch": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Kill Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Kill Switch": {
+      "main": [
+        [
+          {
+            "node": "Kill Switch Engaged?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kill Switch Engaged?": {
+      "main": [
+        [
+          {
+            "node": "Halt On Kill Switch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Kill Switch Clear",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kill Switch Toggle Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Toggle Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Toggle Request": {
+      "main": [
+        [
+          {
+            "node": "Write Kill Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Kill Switch": {
+      "main": [
+        [
+          {
+            "node": "Respond With Switch State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

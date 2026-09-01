@@ -1,0 +1,508 @@
+{
+  "name": "Circuit Breaker - Error Rate Breaker",
+  "nodes": [
+    {
+      "id": "068a5283-8e7d-5ea1-8a69-1a1a81325203",
+      "name": "When Called By Protected Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -540,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "553a9db1-caf0-5e49-bd79-993e08380a75",
+      "name": "Normalize Breaker Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function envStr(name, fallback) {\n  try {\n    var v = $env[name];\n    if (v === undefined || v === null || v === '') { return fallback; }\n    return String(v);\n  } catch (e) {\n    return fallback;\n  }\n}\nfunction pick(v, envName, fallback) {\n  if (v !== undefined && v !== null && v !== '') { return v; }\n  return envStr(envName, fallback);\n}\n\nvar out = [];\nvar items = $input.all();\nfor (var i = 0; i < items.length; i++) {\n  var j = items[i].json || {};\n  var mode = String(pick(j.mode, 'N8N_CB_UNUSED_MODE', 'check')).toLowerCase();\n  if (mode !== 'check' && mode !== 'record') {\n    throw new Error(\"mode must be 'check' or 'record', got: \" + mode);\n  }\n  var status = String(pick(j.status, 'N8N_CB_UNUSED_STATUS', 'success')).toLowerCase();\n  if (mode === 'record' && status !== 'success' && status !== 'error') {\n    throw new Error(\"status must be 'success' or 'error', got: \" + status);\n  }\n  var execId = j.execution_id;\n  if (execId === undefined || execId === null || execId === '') { execId = $execution.id; }\n  var win = Number(pick(j.window_size, 'N8N_CB_ERROR_WINDOW', '20'));\n  var minSamples = Number(pick(j.min_samples, 'N8N_CB_ERROR_MIN_SAMPLES', String(win)));\n  out.push({ json: {\n    mode: mode,\n    is_check: mode === 'check',\n    workflow_key: String(pick(j.workflow_key, 'N8N_CB_WORKFLOW_KEY', 'default')),\n    execution_id: String(execId),\n    status: status,\n    error_message: (j.error_message === undefined || j.error_message === null)\n      ? null : String(j.error_message).slice(0, 2000),\n    window_size: win,\n    min_samples: minSamples,\n    error_rate_threshold: Number(pick(j.error_rate_threshold, 'N8N_CB_ERROR_RATE_THRESHOLD', '0.5'))\n  } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "6c645bec-8d28-576b-bf42-69b9eac7281c",
+      "name": "Mode Is Check?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -100,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e50b3c6e-8713-5e08-a07b-6e03efb02435",
+              "leftValue": "={{ $json.is_check }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "895a5255-d11f-5534-ae8a-1639d137ff75",
+      "name": "Read Breaker State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        120,
+        -180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT state, reason, tripped_at FROM breaker_state WHERE workflow_key = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "1a104dc4-f338-5acc-a2a5-d7e9b02145c8",
+      "name": "Evaluate Breaker Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "var cfg = $('Normalize Breaker Input').first().json;\nvar rows = $input.all();\nvar row = rows.length > 0 ? (rows[0].json || {}) : {};\nvar state = String(row.state || 'closed');\nvar open = state === 'open';\nreturn [{ json: {\n  workflow_key: cfg.workflow_key,\n  breaker_state: state,\n  breaker_open: open,\n  tripped_at: row.tripped_at || null,\n  reason: open\n    ? ('circuit breaker is OPEN for ' + cfg.workflow_key + ': ' + (row.reason || 'no reason recorded') + ' (reset is manual - see README)')\n    : 'circuit breaker closed'\n} }];\n"
+      }
+    },
+    {
+      "id": "ace3b4bd-d0f5-5246-8e46-5dcc7c54e075",
+      "name": "Breaker Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        -180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4809d921-1c2c-5c22-ab58-f303595d6da8",
+              "leftValue": "={{ $json.breaker_open }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2968d128-d5cf-51ae-bf0e-ec871cfda19f",
+      "name": "Halt On Open Breaker",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        780,
+        -280
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=CIRCUIT BREAKER: {{ $('Evaluate Breaker Gate').first().json.reason }}"
+      }
+    },
+    {
+      "id": "aa39f674-8324-59ab-be20-f9c8a49f9780",
+      "name": "Entry Allowed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        780,
+        -80
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c0daeed1-be52-579e-b981-f95e3ff94506",
+              "name": "allowed",
+              "value": "={{ true }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "3eda8d49-6154-5ea6-8f94-f3840956b5fc",
+      "name": "Record Execution Outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        120,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO execution_log (workflow_key, execution_id, status, error_message)\nVALUES ($1, $2, $3, $4)\nRETURNING id, created_at;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}, {{ $json.execution_id }}, {{ $json.status }}, {{ $json.error_message }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "2064ef75-caab-5b1b-8b66-1d812dc004a4",
+      "name": "Read Rolling Window",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        340,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH recent AS (\n  SELECT status FROM execution_log\n  WHERE workflow_key = $1\n  ORDER BY created_at DESC, id DESC\n  LIMIT $2\n)\nSELECT count(*)::int AS total,\n       count(*) FILTER (WHERE status = 'error')::int AS errors\nFROM recent;",
+        "options": {
+          "queryReplacement": "={{ $('Normalize Breaker Input').first().json.workflow_key }}, {{ $('Normalize Breaker Input').first().json.window_size }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "68d094e7-4624-50c8-b47f-b52742cf0e36",
+      "name": "Evaluate Error Rate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "var cfg = $('Normalize Breaker Input').first().json;\nvar row = $input.first().json || {};\nvar total = Number(row.total || 0);\nvar errors = Number(row.errors || 0);\nvar rate = total > 0 ? errors / total : 0;\nrate = Math.round(rate * 10000) / 10000;\nvar enough = total >= Number(cfg.min_samples);\nvar trip = enough && rate > Number(cfg.error_rate_threshold);\nreturn [{ json: {\n  workflow_key: cfg.workflow_key,\n  window_size: Number(cfg.window_size),\n  samples: total,\n  min_samples: Number(cfg.min_samples),\n  errors: errors,\n  error_rate: rate,\n  error_rate_threshold: Number(cfg.error_rate_threshold),\n  should_trip: trip,\n  reason: trip\n    ? ('error rate ' + rate + ' over ' + total + ' runs exceeds threshold ' + cfg.error_rate_threshold)\n    : (enough ? 'error rate within threshold'\n              : 'not enough samples yet (' + total + ' of ' + cfg.min_samples + ')')\n} }];\n"
+      }
+    },
+    {
+      "id": "3459d428-d501-51ea-88a9-65d1866a86b5",
+      "name": "Should Trip Breaker?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8c034688-30d5-54e5-8945-4f4562379240",
+              "leftValue": "={{ $json.should_trip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "910b8ed1-a714-5992-9f52-8b8355a80023",
+      "name": "Trip Breaker (Error Rate)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1000,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO breaker_state (workflow_key, state, reason, tripped_at, tripped_by)\nVALUES ($1, 'open', $2, now(), $3)\nON CONFLICT (workflow_key) DO UPDATE\n  SET state = 'open', reason = EXCLUDED.reason, tripped_at = now(),\n      tripped_by = EXCLUDED.tripped_by, reset_at = NULL, updated_at = now()\nRETURNING workflow_key, state, reason, tripped_at;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}, {{ $json.reason }}, error-rate-breaker"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "8d408803-5860-56f6-859d-5ed736b32fa8",
+      "name": "Build Breaker Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build one alert payload. Wire the NEXT node to Slack / email / PagerDuty.\nvar j = $input.first().json || {};\nreturn [{ json: {\n  alert: true,\n  severity: 'critical',\n  module: 'error-rate-breaker',\n  workflow_key: j.workflow_key || 'unknown',\n  reason: j.reason || 'limit exceeded',\n  detail: j,\n  execution_id: $execution.id,\n  fired_at: new Date().toISOString()\n} }];\n"
+      }
+    },
+    {
+      "id": "442a400d-d66a-519e-961b-6e537fcd03df",
+      "name": "Breaker Alert Sink (wire Slack or email here)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "021b00eb-3bc5-532f-bc1e-bc685dabfe9b",
+      "name": "Breaker Still Closed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1000,
+        320
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0fcac382-2e94-57b6-a47d-d4226de040cb",
+              "name": "tripped",
+              "value": "={{ false }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called By Protected Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Breaker Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Breaker Input": {
+      "main": [
+        [
+          {
+            "node": "Mode Is Check?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode Is Check?": {
+      "main": [
+        [
+          {
+            "node": "Read Breaker State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Execution Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Breaker State": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Breaker Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Breaker Gate": {
+      "main": [
+        [
+          {
+            "node": "Breaker Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breaker Open?": {
+      "main": [
+        [
+          {
+            "node": "Halt On Open Breaker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Entry Allowed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Execution Outcome": {
+      "main": [
+        [
+          {
+            "node": "Read Rolling Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Rolling Window": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Error Rate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Error Rate": {
+      "main": [
+        [
+          {
+            "node": "Should Trip Breaker?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Trip Breaker?": {
+      "main": [
+        [
+          {
+            "node": "Trip Breaker (Error Rate)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Breaker Still Closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trip Breaker (Error Rate)": {
+      "main": [
+        [
+          {
+            "node": "Build Breaker Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Breaker Alert": {
+      "main": [
+        [
+          {
+            "node": "Breaker Alert Sink (wire Slack or email here)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

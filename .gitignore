@@ -1,0 +1,33 @@
+# Local config rendered from config/caps.example.yaml -- may hold real caps/keys
+config/caps.yaml
+config/caps.*.yaml
+!config/caps.example.yaml
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Workflow exports pulled straight off a live instance often carry credential
+# ids, instance urls and pinned production data. Stage them here, clean them,
+# then move the cleaned file into workflows/.
+scratch/
+*.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

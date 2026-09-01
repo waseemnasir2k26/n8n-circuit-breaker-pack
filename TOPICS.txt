@@ -1,0 +1,1 @@
+n8n,n8n-workflows,n8n-nodes,circuit-breaker,kill-switch,rate-limiting,cost-control,budget,ai-agents,llm,llmops,guardrails,automation,workflow-automation,reliability,observability,failsafe,postgres,self-hosted,low-code

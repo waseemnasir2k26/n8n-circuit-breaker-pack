@@ -1,0 +1,296 @@
+{
+  "name": "Circuit Breaker - Spend Cap",
+  "nodes": [
+    {
+      "id": "068a5283-8e7d-5ea1-8a69-1a1a81325203",
+      "name": "When Called By Protected Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -320,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "5599298b-2d84-5e96-abb7-0f5333ac4813",
+      "name": "Price The Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// --- COST MATH START ---\n// USD per 1,000,000 tokens. These are DEFAULTS, not gospel: check every number\n// against your provider's current price list before you trust the cap.\nvar DEFAULT_COST_TABLE = {\n  'gpt-4o': { input: 2.5, output: 10.0 },\n  'gpt-4o-mini': { input: 0.15, output: 0.6 },\n  'claude-haiku': { input: 0.8, output: 4.0 },\n  'claude-sonnet': { input: 3.0, output: 15.0 },\n  'claude-opus': { input: 15.0, output: 75.0 },\n  'default': { input: 5.0, output: 15.0 }\n};\n\nfunction resolveModelRate(model, table) {\n  var t = table || DEFAULT_COST_TABLE;\n  var key = String(model === undefined || model === null ? '' : model).toLowerCase().trim();\n  if (Object.prototype.hasOwnProperty.call(t, key)) { return t[key]; }\n  var names = Object.keys(t);\n  var best = null;\n  for (var i = 0; i < names.length; i++) {\n    var n = names[i];\n    if (n === 'default') { continue; }\n    if (key.indexOf(n) === 0) {\n      if (best === null || n.length > best.length) { best = n; }\n    }\n  }\n  if (best !== null) { return t[best]; }\n  if (Object.prototype.hasOwnProperty.call(t, 'default')) { return t['default']; }\n  return DEFAULT_COST_TABLE['default'];\n}\n\nfunction estimateCostUsd(model, inputTokens, outputTokens, table) {\n  var rate = resolveModelRate(model, table);\n  var inTok = Number(inputTokens);\n  var outTok = Number(outputTokens);\n  if (!isFinite(inTok)) { inTok = 0; }\n  if (!isFinite(outTok)) { outTok = 0; }\n  if (inTok < 0 || outTok < 0) { throw new Error('token counts must be >= 0'); }\n  var cost = (inTok / 1000000) * Number(rate.input) + (outTok / 1000000) * Number(rate.output);\n  return Math.round(cost * 1000000) / 1000000;\n}\n// --- COST MATH END ---\n\nfunction envStr(name, fallback) {\n  try {\n    var v = $env[name];\n    if (v === undefined || v === null || v === '') { return fallback; }\n    return String(v);\n  } catch (e) {\n    return fallback;\n  }\n}\nfunction pick(v, envName, fallback) {\n  if (v !== undefined && v !== null && v !== '') { return v; }\n  return envStr(envName, fallback);\n}\n\nvar out = [];\nvar items = $input.all();\nfor (var idx = 0; idx < items.length; idx++) {\n  var j = items[idx].json || {};\n  var table = j.cost_table || DEFAULT_COST_TABLE;\n  var cost = estimateCostUsd(j.model, j.input_tokens, j.output_tokens, table);\n  out.push({ json: {\n    workflow_key: String(pick(j.workflow_key, 'N8N_CB_WORKFLOW_KEY', 'default')),\n    spend_window: String(pick(j.spend_window, 'N8N_CB_SPEND_WINDOW', 'day')),\n    model: String(j.model === undefined || j.model === null ? 'unknown' : j.model),\n    input_tokens: Number(j.input_tokens) || 0,\n    output_tokens: Number(j.output_tokens) || 0,\n    call_cost_usd: cost,\n    cap_usd: Number(pick(j.cap_usd, 'N8N_CB_SPEND_CAP_USD', '5'))\n  } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "8d2cf7ac-3d76-5bce-8922-cfc68928ca9a",
+      "name": "Increment Spend Counter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        120,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO spend_counter (workflow_key, window_start, cost_usd, call_count)\nVALUES ($1, date_trunc($2, now()), $3, 1)\nON CONFLICT (workflow_key, window_start) DO UPDATE\n  SET cost_usd = spend_counter.cost_usd + EXCLUDED.cost_usd,\n      call_count = spend_counter.call_count + 1,\n      updated_at = now()\nRETURNING cost_usd, call_count, window_start;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}, {{ $json.spend_window }}, {{ $json.call_cost_usd }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "dc591042-ae8e-54ef-836f-d94c27d7527a",
+      "name": "Evaluate Spend Cap",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "var cfg = $('Price The Call').first().json;\nvar row = $input.first().json || {};\nvar cap = Number(cfg.cap_usd);\nvar total = Number(row.cost_usd || 0);\nvar over = total >= cap;\nreturn [{ json: {\n  workflow_key: cfg.workflow_key,\n  spend_window: cfg.spend_window,\n  window_start: row.window_start || null,\n  window_total_usd: total,\n  call_count: Number(row.call_count || 0),\n  last_call_usd: Number(cfg.call_cost_usd || 0),\n  cap_usd: cap,\n  remaining_usd: Math.round((cap - total) * 1000000) / 1000000,\n  over_cap: over,\n  reason: over\n    ? ('spend cap exceeded: ' + total + ' USD of ' + cap + ' USD in the current ' + cfg.spend_window)\n    : 'within spend cap'\n} }];\n"
+      }
+    },
+    {
+      "id": "ffd585ce-fb7a-5244-ac20-a64a0ef3fb7b",
+      "name": "Over Spend Cap?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5298a1eb-a82a-500c-84c4-8405cf5ffb9b",
+              "leftValue": "={{ $json.over_cap }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "28e9c20d-16c9-5d6e-8051-55aeb21d210a",
+      "name": "Trip Breaker (Spend)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        780,
+        -140
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO breaker_state (workflow_key, state, reason, tripped_at, tripped_by)\nVALUES ($1, 'open', $2, now(), $3)\nON CONFLICT (workflow_key) DO UPDATE\n  SET state = 'open', reason = EXCLUDED.reason, tripped_at = now(),\n      tripped_by = EXCLUDED.tripped_by, reset_at = NULL, updated_at = now()\nRETURNING workflow_key, state, reason, tripped_at;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_key }}, {{ $json.reason }}, spend-cap"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Circuit Breaker Postgres"
+        }
+      }
+    },
+    {
+      "id": "49d028a0-3535-5cb6-a3f8-29f7c9e78ae5",
+      "name": "Build Spend Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        -140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build one alert payload. Wire the NEXT node to Slack / email / PagerDuty.\nvar j = $input.first().json || {};\nreturn [{ json: {\n  alert: true,\n  severity: 'critical',\n  module: 'spend-cap',\n  workflow_key: j.workflow_key || 'unknown',\n  reason: j.reason || 'limit exceeded',\n  detail: j,\n  execution_id: $execution.id,\n  fired_at: new Date().toISOString()\n} }];\n"
+      }
+    },
+    {
+      "id": "9ee92d9e-4e5d-528a-b85f-158ea7928ed7",
+      "name": "Spend Alert Sink (wire Slack or email here)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        -140
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "51602eb8-ca3b-5425-9395-1a15b1d8bf4f",
+      "name": "Halt On Spend Cap",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        -140
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "=CIRCUIT BREAKER: {{ $('Evaluate Spend Cap').first().json.reason }}"
+      }
+    },
+    {
+      "id": "f4ff6b50-4c69-5fea-b41a-8e0e64fc7ec1",
+      "name": "Spend Allowed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        780,
+        140
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6180aace-73c6-5d6a-a0b8-d132ccbb7477",
+              "name": "allowed",
+              "value": "={{ true }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called By Protected Workflow": {
+      "main": [
+        [
+          {
+            "node": "Price The Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price The Call": {
+      "main": [
+        [
+          {
+            "node": "Increment Spend Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Spend Counter": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Spend Cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Spend Cap": {
+      "main": [
+        [
+          {
+            "node": "Over Spend Cap?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Over Spend Cap?": {
+      "main": [
+        [
+          {
+            "node": "Trip Breaker (Spend)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Spend Allowed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trip Breaker (Spend)": {
+      "main": [
+        [
+          {
+            "node": "Build Spend Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Spend Alert": {
+      "main": [
+        [
+          {
+            "node": "Spend Alert Sink (wire Slack or email here)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spend Alert Sink (wire Slack or email here)": {
+      "main": [
+        [
+          {
+            "node": "Halt On Spend Cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}
