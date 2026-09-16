@@ -2,6 +2,10 @@
 
 Drop-in n8n sub-workflows that put a spend cap, an iteration budget, an error-rate circuit breaker and a manual kill switch in front of any AI-agent workflow.
 
+## Status
+
+Last reviewed: September 2026 · release v2026.09
+
 ## Why this exists
 
 An n8n workflow that calls an LLM in a loop has no natural stopping point. If the exit condition never becomes true, the loop keeps calling the model. Nothing crashes. No node turns red. The execution just keeps running and every turn costs money. You find out from the provider's billing page, not from n8n.
