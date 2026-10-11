@@ -1,0 +1,4 @@
+- n8n-circuit-breaker-pack is a public, MIT-licensed set of n8n sub-workflows (spend cap, iteration budget, error-rate breaker, kill switch, plus an example protected agent) with a Postgres schema, an example caps config and three Python validators in tests/.
+- State: v1, unchanged since the September 2026 initial commit; targets n8n 1.x and imports with placeholder credential and workflow ids.
+- Re-reviewed October 2026: README, file tree and commit history re-read; documentation and version metadata only, no code changes. External links (skynetjoe.com, the Calendly page, the n8n community thread) returned HTTP 200.
+- Known gaps (from the README's Limitations): cost is estimated from a hand-written table; token counts must be mapped in or the cap charges zero; the cap is checked after the crossing call; breaker reset is manual; the kill switch only stops work at workflow entry. Repo-level: no CI workflow, so validators run by hand.
