@@ -25,6 +25,8 @@ The model can ignore, misread, or lose a prompt instruction in a long context. I
 ![storage](https://img.shields.io/badge/state-Postgres-336791)
 ![status](https://img.shields.io/badge/status-v1-lightgrey)
 
+**For you if** you run n8n workflows that call an LLM unattended and you want a limit the model cannot talk its way past.
+
 ## Quick start
 
 1. **Create the tables.** Point psql at the database your n8n Postgres credential uses (a separate database is cleaner than n8n's own):
@@ -159,7 +161,7 @@ Read these before you trust it with real money.
 
 ## Contributing
 
-Issues and pull requests welcome, particularly: a Redis or SQLite state backend, cost-table updates with a source link, a Slack alert node wired into the alert sinks, and a Docker Compose example that stands up n8n plus Postgres plus this schema.
+Issues and pull requests are welcome, particularly: a Redis or SQLite state backend, cost-table updates with a source link, a Slack alert node wired into the alert sinks, and a Docker Compose example that stands up n8n plus Postgres plus this schema.
 
 Before opening a PR:
 
@@ -171,17 +173,12 @@ Before opening a PR:
 
 ---
 
-Built by SkynetLabs (Waseem Nasir) - we build and monitor n8n estates for clients.
-https://skynetjoe.com - https://calendly.com/skynetlabs/schedule-a-free-consultation
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-## Work with SkynetLabs
+---
 
-Built by [Waseem Nasir](https://www.skynetjoe.com/?utm_source=github&utm_medium=readme&utm_campaign=n8n-circuit-breaker-pack) at SkynetLabs — n8n + AI automation for small businesses.
+Built by SkynetLabs. Contact: info@skynetjoe.com
 
-- Hire on Fiverr: https://www.fiverr.com/agencies/skynetjoellc
-- Hire on Upwork: https://www.upwork.com/freelancers/muhammadwaseemnasir
-- Book a free call: https://calendly.com/skynetlabs/schedule-a-free-consultation
+Need this wired into your business? SkynetLabs builds voice agents, n8n back offices and sites that convert → https://skynetjoe.com
